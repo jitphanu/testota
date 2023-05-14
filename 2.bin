@@ -1,57 +1,110 @@
-/**
- * httpUpdate.ino
- *
- *  Created on: 27.11.2015
- *
+/* Update ESP32 firmware via external web server
+ * 
+ * 
  */
 
-#include <Arduino.h>
-
 #include <WiFi.h>
-
 #include <HTTPClient.h>
-#include <ESP32httpUpdate.h>
+#include <Update.h>
 
-#define USE_SERIAL Serial
-#define url "https://iot.treecloudthailand.com/firmware/test2.bin"
+// location of firmware file on external web server
+// change to your actual .bin location
+#define FWURL "https://raw.githubusercontent.com/jitphanu/testota/main/" //software will add the version and .bin at the end,
+#define FWversion 2
 
+
+HTTPClient client;
+// Your WiFi credentials
+const char* ssid = "charging-cabinet";
+const char* password = "12345678";
+
+// Global variables
+int totalLength;       //total size of firmware
+int currentLength = 0; //current size of written firmware
+//--------------------------------------------------------------------------------------------------------------------
 void setup() {
+  Serial.begin(115200);
+  // Start WiFi connection
+  WiFi.mode(WIFI_MODE_STA);        
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED) {
+      delay(500);
+      Serial.print(".");
+  }
 
-    USE_SERIAL.begin(115200);
-    // USE_SERIAL.setDebugOutput(true);
-
-    USE_SERIAL.println();
-    USE_SERIAL.println();
-    USE_SERIAL.println();
-
-    for(uint8_t t = 4; t > 0; t--) {
-        USE_SERIAL.printf("[SETUP] WAIT %d...\n", t);
-        USE_SERIAL.flush();
-        delay(1000);
-    }
-
-    WiFi.begin("charging-cabinet", "12345678");
-
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP()); 
+  
 }
-
+//************************************************************
 void loop() {
-    // wait for WiFi connection
-    if((WiFi.status() == WL_CONNECTED)) {
+  Serial.print("Current firmware: v");  Serial.println(FWversion);
+  checkupdate();
+  delay(10000);
+  }
+//************************************************************
 
-        t_httpUpdate_return ret = ESPhttpUpdate.update(url);
+void checkupdate(){
+  // Connect to external web server
+  Serial.println("Checking if new firmware is available.");
 
-        switch(ret) {
-            case HTTP_UPDATE_FAILED:
-                USE_SERIAL.printf("HTTP_UPDATE_FAILD Error (%d): %s", ESPhttpUpdate.getLastError(), ESPhttpUpdate.getLastErrorString().c_str());
-                break;
-
-            case HTTP_UPDATE_NO_UPDATES:
-                USE_SERIAL.println("HTTP_UPDATE_NO_UPDATES");
-                break;
-
-            case HTTP_UPDATE_OK:
-                USE_SERIAL.println("HTTP_UPDATE_OK");
-                break;
-        }
-    }
+  int fwNewVersion = FWversion+1; //cerca la versione successiva del firmware.
+  String fwVersionURL = FWURL + String(fwNewVersion) + ".bin";
+   
+  client.begin(fwVersionURL);
+  // Get file, just to check if each reachable
+  int resp = client.GET();
+  Serial.print("Response: ");
+  Serial.println(resp);
+  // If file is reachable, start downloading
+  if(resp == 200){
+      // get length of document (is -1 when Server sends no Content-Length header)
+      totalLength = client.getSize();
+      // transfer to local variable
+      int len = totalLength;
+      // this is required to start firmware update process
+      Update.begin(UPDATE_SIZE_UNKNOWN);
+      Serial.printf("FW Size: %u\n",totalLength);
+      // create buffer for read
+      uint8_t buff[128] = { 0 };
+      // get tcp stream
+      WiFiClient * stream = client.getStreamPtr();
+      // read all data from server
+      Serial.println("Updating firmware...");
+      while(client.connected() && (len > 0 || len == -1)) {
+           // get available data size
+           size_t size = stream->available();
+           if(size) {
+              // read up to 128 byte
+              int c = stream->readBytes(buff, ((size > sizeof(buff)) ? sizeof(buff) : size));
+              // pass to function
+              updateFirmware(buff, c);
+              if(len > 0) {
+                 len -= c;
+              }
+           }
+           delay(1);
+      }
+  }else{
+    Serial.println("Cannot download firmware file.");
+  }
+  client.end();
+}
+//----------------------------------------------------------------------------------------------------------------------
+// Function to update firmware incrementally
+// Buffer is declared to be 128 so chunks of 128 bytes
+// from firmware is written to device until server closes
+void updateFirmware(uint8_t *data, size_t len){
+  Update.write(data, len);
+  currentLength += len;
+  // Print dots while waiting for update to finish
+  //Serial.print('.');
+  // if current length of written firmware is not equal to total firmware size, repeat
+  if(currentLength != totalLength) return;
+  Update.end(true);
+  Serial.printf("\nUpdate Success, Total Size: %u\nRebooting...\n", currentLength);
+  // Restart ESP32 to see changes 
+  ESP.restart();
 }
